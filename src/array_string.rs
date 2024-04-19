@@ -19,6 +19,14 @@ use crate::utils::MakeMaybeUninit;
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 
+macro_rules! assert_length_lt_capacity_const {
+    ($len:expr, $cap:expr) => {
+        if $len > 0 {
+            let _len_check = [(); $cap /*ArrayVec/ArrayString: insufficient capacity */][$len - 1];
+        }
+    }
+}
+
 
 /// A string with a fixed capacity.
 ///
@@ -433,6 +441,54 @@ impl<const CAP: usize, LenType: LenUint> ArrayString<CAP, LenType>
         self.xs.as_mut_ptr() as *mut u8
     }
 }
+
+// NB: LenUint::from_usize cannot be const fn, hence need explicit impls for each len type
+macro_rules! impl_const_fns {
+    ($ty: path) => {
+        impl<const CAP: usize> ArrayString<CAP, $ty> {
+            /// Create a new `ArrayString` from a `str`, suitable for const context
+            ///
+            /// Capacity is inferred from the type parameter.
+            ///
+            /// **Panics** or causes a **const error** if the backing array is not large enough to fit the
+            /// string.
+            ///
+            /// ```
+            /// use arrayvec::ArrayString;
+            ///
+            /// const S: ArrayString<3> = ArrayString::<3, u8>::from_str_const("");
+            /// ```
+            ///
+            /// A compile-time error will occur - in constants - if the input is too long:
+            ///
+            /// ```compile_fail
+            /// # use arrayvec::ArrayString;
+            /// const S1: ArrayString<3> = ArrayString::<3, u8>::from_str_const("too long for the capacity");
+            /// ```
+            pub const fn from_str_const(s: &str) -> Self {
+                let bytes = s.as_bytes();
+                let len = bytes.len();
+                assert_length_lt_capacity_const!(len, CAP);
+
+                let mut vec = Self::new_const();
+                let mut i = 0;
+                while i < len {
+                    vec.xs[i] = MaybeUninit::new(bytes[i]);
+                    i += 1;
+                }
+
+                // Safety: we know len <= CAP and elements < len are initialized
+                vec.len = len as $ty;
+                vec
+            }
+        }
+    };
+}
+
+impl_const_fns!(u8);
+impl_const_fns!(u16);
+impl_const_fns!(u32);
+impl_const_fns!(u64);
 
 impl<const CAP: usize, LenType: LenUint> Deref for ArrayString<CAP, LenType>
 {
